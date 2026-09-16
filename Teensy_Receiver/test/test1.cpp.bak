@@ -1,0 +1,194 @@
+#include <NativeEthernet.h>
+#include <NativeEthernetUdp.h>
+#include <Arduino.h>
+#include "ODriveCAN.h"
+#include <FastLED.h>
+#include <array>
+#include <string>
+#include <sstream>
+#include <vector>
+#include <cstring>
+#include <cstdio>
+#include <FlexCAN_T4.h>
+#include "ODriveFlexCAN.hpp"
+#include <AccelStepper.h>
+#include <MultiStepper.h>
+
+#define CAN_BAUDRATE 1000000
+FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can_intf;
+
+// Create 4 ODrive objects with different node IDs
+ODriveCAN odrv0(wrap_can_intf(can_intf), 0);
+ODriveCAN odrv1(wrap_can_intf(can_intf), 1);
+ODriveCAN odrv2(wrap_can_intf(can_intf), 2);
+ODriveCAN odrv3(wrap_can_intf(can_intf), 3);
+
+// User data for each ODrive
+struct ODriveUserData {
+    Heartbeat_msg_t last_heartbeat;
+    bool received_heartbeat = false;
+    bool available = false;
+};
+
+ODriveUserData odrv0_data;
+ODriveUserData odrv1_data;
+ODriveUserData odrv2_data;
+ODriveUserData odrv3_data;
+
+#define LED_PIN 13
+
+void onHeartbeat0(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat1(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat2(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat3(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onCanMessage(const CAN_message_t &msg) {
+    onReceive(msg, odrv0);
+    onReceive(msg, odrv1);
+    onReceive(msg, odrv2);
+    onReceive(msg, odrv3);
+}
+
+void pumpCAN() {
+    can_intf.events();
+}
+
+void setup() {
+    pinMode(LED_PIN, OUTPUT);
+    Serial.begin(115200); 
+    Serial3.begin(115200);   
+
+    can_intf.begin();
+    can_intf.setBaudRate(CAN_BAUDRATE);
+    can_intf.setMaxMB(16);
+    can_intf.enableFIFO();
+    can_intf.enableFIFOInterrupt();
+    can_intf.onReceive(onCanMessage);
+
+    // Register heartbeat callbacks for each ODrive
+    odrv0.onStatus(onHeartbeat0, &odrv0_data);
+    odrv1.onStatus(onHeartbeat1, &odrv1_data);
+    odrv2.onStatus(onHeartbeat2, &odrv2_data);
+    odrv3.onStatus(onHeartbeat3, &odrv3_data);
+
+    
+    // Try to detect each ODrive (5 attempts max)
+    for (int attempt = 0; attempt < 5; attempt++) {
+        unsigned long start_time = millis();
+        while (millis() - start_time < 3000) {
+            pumpCAN();
+            delay(2);
+        }
+        
+        
+        // If all connected, break
+        if (odrv0_data.received_heartbeat && odrv1_data.received_heartbeat &&
+            odrv2_data.received_heartbeat && odrv3_data.received_heartbeat) {
+            break;
+        }
+        
+        // Blink LED while waiting
+        for (int i = 0; i < 5; i++) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(100);
+            digitalWrite(LED_PIN, LOW);
+            delay(100);
+        }
+    }
+    
+    // Mark available ODrives and configure them
+    if (odrv0_data.received_heartbeat) {
+        odrv0_data.available = true;
+        odrv0.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv0.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv1_data.received_heartbeat) {
+        odrv1_data.available = true;
+        odrv1.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv1.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv2_data.received_heartbeat) {
+        odrv2_data.available = true;
+        odrv2.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv2.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv3_data.received_heartbeat) {
+        odrv3_data.available = true;
+        odrv3.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv3.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    delay(100);
+}
+
+void loop() {
+    pumpCAN();
+
+    if (Serial3.available()) {
+        String receivedData = Serial3.readStringUntil('\n');
+        receivedData.trim();
+
+
+        // Check for command strings first
+        if (receivedData == "STOP") {
+            if (odrv0_data.available) odrv0.setVelocity(0);
+            if (odrv1_data.available) odrv1.setVelocity(0);
+            if (odrv2_data.available) odrv2.setVelocity(0);
+            if (odrv3_data.available) odrv3.setVelocity(0);
+        }
+        else if (receivedData == "TRIANGLE") {
+            digitalWrite(LED_PIN, HIGH);
+            delay(50);
+            digitalWrite(LED_PIN, LOW);
+        }
+        else if (receivedData == "CIRCLE") {
+            digitalWrite(LED_PIN, HIGH);
+            delay(50);
+            digitalWrite(LED_PIN, LOW);
+        }
+        else if (receivedData == "SQUARE") {
+        }
+        else if (receivedData == "CROSS") {
+        }
+        else {
+            // If it's not a command, treat as velocity value and send to all ODrives
+            int speed = receivedData.toInt();
+            
+            if (odrv0_data.available) {
+                odrv0.setVelocity(speed);
+            }
+            if (odrv1_data.available) {
+                odrv1.setVelocity(speed);
+            }
+            if (odrv2_data.available) {
+                odrv2.setVelocity(speed);
+            }
+            if (odrv3_data.available) {
+                odrv3.setVelocity(speed);
+            }
+            
+        }
+    }
+}

@@ -1,0 +1,273 @@
+#include <NativeEthernet.h>
+#include <NativeEthernetUdp.h>
+#include <Arduino.h>
+#include "ODriveCAN.h"
+#include <FastLED.h>
+#include <array>
+#include <string>
+#include <sstream>
+#include <vector>
+#include <cstring>
+#include <cstdio>
+#include <FlexCAN_T4.h>
+#include "ODriveFlexCAN.hpp"
+#include <AccelStepper.h>
+#include <MultiStepper.h>
+
+#define CAN_BAUDRATE 1000000
+FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can_intf;
+
+// Create 4 ODrive objects with different node IDs
+ODriveCAN odrv0(wrap_can_intf(can_intf), 0);
+ODriveCAN odrv1(wrap_can_intf(can_intf), 1);
+ODriveCAN odrv2(wrap_can_intf(can_intf), 2);
+ODriveCAN odrv3(wrap_can_intf(can_intf), 3);
+
+// User data for each ODrive
+struct ODriveUserData {
+    Heartbeat_msg_t last_heartbeat;
+    bool received_heartbeat = false;
+    bool available = false;
+};
+
+ODriveUserData odrv0_data;
+ODriveUserData odrv1_data;
+ODriveUserData odrv2_data;
+ODriveUserData odrv3_data;
+
+#define LED_PIN 13
+
+// ESP32 control variables
+bool esp32_available = false;
+unsigned long last_esp32_time = 0;
+const unsigned long ESP32_TIMEOUT = 1000; // 1 second timeout
+bool wifi_available = false;
+
+// Function declarations
+void processESP32Control();
+
+void onHeartbeat0(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat1(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat2(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onHeartbeat3(Heartbeat_msg_t &msg, void *user_data) {
+    ODriveUserData *data = static_cast<ODriveUserData *>(user_data);
+    data->last_heartbeat = msg;
+    data->received_heartbeat = true;
+}
+
+void onCanMessage(const CAN_message_t &msg) {
+    onReceive(msg, odrv0);
+    onReceive(msg, odrv1);
+    onReceive(msg, odrv2);
+    onReceive(msg, odrv3);
+}
+
+void pumpCAN() {
+    can_intf.events();
+}
+
+// ESP32 Control Processing Function
+void processESP32Control() {
+    if (!Serial3.available()) {
+        return;
+    }
+    
+    pumpCAN();
+    String msg = Serial3.readStringUntil('\n');
+    
+    if (msg == "") {
+        return;
+    }
+    
+    msg.trim();
+    
+    // Parse comma-separated values: wheelX,wheelY,armX,armY,ghora,gripper,base,lifter
+    int commaPos[7];
+    int found = 0;
+    
+    for (int i = 0; i < msg.length() && found < 7; i++) {
+        if (msg[i] == ',') {
+            commaPos[found++] = i;
+        }
+    }
+    
+    if (found < 7) {
+        // Not enough comma separators, invalid data
+        Serial.println("ESP32: Invalid data format");
+        return;
+    }
+    
+    // Extract raw values (-7 to +7 from ESP32)
+    int wheelX_raw = msg.substring(0, commaPos[0]).toInt();
+    int wheelY_raw = msg.substring(commaPos[0] + 1, commaPos[1]).toInt();
+    int armX_raw = msg.substring(commaPos[1] + 1, commaPos[2]).toInt();
+    int armY_raw = msg.substring(commaPos[2] + 1, commaPos[3]).toInt();
+    int ghoraVal = msg.substring(commaPos[3] + 1, commaPos[4]).toInt();
+    int gripperVal = msg.substring(commaPos[4] + 1, commaPos[5]).toInt();
+    int baseVal = msg.substring(commaPos[5] + 1, commaPos[6]).toInt();
+    int lifterMode = msg.substring(commaPos[6] + 1).toInt();
+    
+    // Update ESP32 status
+    last_esp32_time = millis();
+    esp32_available = true;
+    wifi_available = true;
+    
+    // Debug output
+    Serial.print("ESP32: ");
+    Serial.print(wheelX_raw); Serial.print(",");
+    Serial.print(wheelY_raw); Serial.print(",");
+    Serial.print(armX_raw); Serial.print(",");
+    Serial.print(armY_raw); Serial.print(",");
+    Serial.print(ghoraVal); Serial.print(",");
+    Serial.print(gripperVal); Serial.print(",");
+    Serial.print(baseVal); Serial.print(",");
+    Serial.println(lifterMode);
+    
+    // Convert to velocity commands for ODrives (scale -7 to +7 => velocity)
+    float wheelVelLeft = (wheelY_raw + wheelX_raw) * 0.5;
+    float wheelVelRight = (wheelY_raw - wheelX_raw) * 0.5;
+    float armVelX = armX_raw * 0.5;
+    float armVelY = armY_raw * 0.5;
+    
+    // Control wheel motors (ODrive 0 & 1)
+    if (odrv0_data.available) {
+        odrv0.setVelocity(wheelVelLeft);
+    }
+    if (odrv1_data.available) {
+        odrv1.setVelocity(wheelVelRight);
+    }
+    
+    // Control arm motors (ODrive 2 & 3)
+    if (odrv2_data.available) {
+        odrv2.setVelocity(armVelX);
+    }
+    if (odrv3_data.available) {
+        odrv3.setVelocity(armVelY);
+    }
+    
+    // TODO: Add gripper, base, lifter control based on your hardware setup
+}
+
+
+void setup() {
+    pinMode(LED_PIN, OUTPUT);
+    Serial.begin(115200); 
+    Serial3.begin(9600);   
+
+    can_intf.begin();
+    can_intf.setBaudRate(CAN_BAUDRATE);
+    can_intf.setMaxMB(16);
+    can_intf.enableFIFO();
+    can_intf.enableFIFOInterrupt();
+    can_intf.onReceive(onCanMessage);
+
+    // Register heartbeat callbacks for each ODrive
+    odrv0.onStatus(onHeartbeat0, &odrv0_data);
+    odrv1.onStatus(onHeartbeat1, &odrv1_data);
+    odrv2.onStatus(onHeartbeat2, &odrv2_data);
+    odrv3.onStatus(onHeartbeat3, &odrv3_data);
+
+    
+    // Try to detect each ODrive (5 attempts max)
+    for (int attempt = 0; attempt < 5; attempt++) {
+        unsigned long start_time = millis();
+        while (millis() - start_time < 3000) {
+            pumpCAN();
+            delay(2);
+        }
+        
+        
+        // If all connected, break
+        if (odrv0_data.received_heartbeat && odrv1_data.received_heartbeat &&
+            odrv2_data.received_heartbeat && odrv3_data.received_heartbeat) {
+            break;
+        }
+        
+        // Blink LED while waiting
+        for (int i = 0; i < 5; i++) {
+            digitalWrite(LED_PIN, HIGH);
+            delay(100);
+            digitalWrite(LED_PIN, LOW);
+            delay(100);
+        }
+    }
+    
+    // Mark available ODrives and configure them
+    if (odrv0_data.received_heartbeat) {
+        odrv0_data.available = true;
+        odrv0.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv0.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv1_data.received_heartbeat) {
+        odrv1_data.available = true;
+        odrv1.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv1.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv2_data.received_heartbeat) {
+        odrv2_data.available = true;
+        odrv2.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv2.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    if (odrv3_data.received_heartbeat) {
+        odrv3_data.available = true;
+        odrv3.setControllerMode(CONTROL_MODE_VELOCITY_CONTROL, INPUT_MODE_VEL_RAMP);
+        odrv3.setState(AXIS_STATE_CLOSED_LOOP_CONTROL);
+    }
+    
+    delay(100);
+}
+
+void loop() {
+    pumpCAN();
+
+    // Process ESP32 control data if available
+    if (Serial3.available()) {
+        processESP32Control();
+    }
+    
+    // Check for ESP32 timeout
+    if (millis() - last_esp32_time > ESP32_TIMEOUT) {
+        if (esp32_available) {
+            // Lost connection, stop all motors
+            Serial.println("ESP32: Connection lost - stopping motors");
+            if (odrv0_data.available) odrv0.setVelocity(0);
+            if (odrv1_data.available) odrv1.setVelocity(0);
+            if (odrv2_data.available) odrv2.setVelocity(0);
+            if (odrv3_data.available) odrv3.setVelocity(0);
+            
+            esp32_available = false;
+            wifi_available = false;
+        }
+    }
+    
+    // Status indicator
+    static unsigned long lastStatusPrint = 0;
+    if (millis() - lastStatusPrint > 5000) {
+        lastStatusPrint = millis();
+        Serial.print("Status - ESP32: ");
+        Serial.print(esp32_available ? "CONNECTED" : "DISCONNECTED");
+        Serial.print(" | ODrives: ");
+        Serial.print(odrv0_data.available ? "0 " : "");
+        Serial.print(odrv1_data.available ? "1 " : "");
+        Serial.print(odrv2_data.available ? "2 " : "");
+        Serial.println(odrv3_data.available ? "3" : "");
+    }
+}
