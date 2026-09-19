@@ -3,22 +3,43 @@
 #include <NativeEthernetUdp.h>
 #include <ArduinoJson.h> 
 #include <SabertoothSimplified.h>
+#include <PWMServo.h>
 
 
 SabertoothSimplified ST(Serial4);
 
 
 uint8_t mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-IPAddress ip(192, 168, 2, 177); 
+IPAddress ip(192, 168, 68, 177); 
 unsigned int localPort = 5005;  
+PWMServo servo9;
+PWMServo servo10;
+PWMServo servo11;
+PWMServo servo12;
 
 EthernetUDP Udp;
 char packetBuffer[UDP_TX_PACKET_MAX_SIZE]; 
 
 void setup() {
     Serial4.begin(9600);   
-    Serial.begin(115200);  
+    Serial.begin(115200);
+ 
+    // Attach the servos to physical pins
+    servo9.attach(9);
+    servo10.attach(10);
+    servo11.attach(11);
+    servo12.attach(12);
 
+    servo9.write(70);
+    servo10.write(90);
+    servo11.write(90);
+    servo12.write(90);
+
+ 
+    
+      
+
+    
     
     Ethernet.begin(mac, ip);
     
